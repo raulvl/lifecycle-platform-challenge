@@ -26,7 +26,7 @@ pip install -r requirements.txt
 pytest tests/ -v
 ```
 
-All 16 tests should pass. Airflow imports are mocked in `tests/conftest.py` so no Airflow installation is needed for the test suite.
+All 17 tests should pass. Airflow imports are mocked in `tests/conftest.py` so no Airflow installation is needed for the test suite.
 
 ### Run the SQL Query
 

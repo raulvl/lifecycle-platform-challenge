@@ -1,91 +1,54 @@
-# Part 4 — Value Model Integration Design
+# Part 4 — Value Model Integration
 
-## 1. BigQuery Query Modification
+## 1. Modifying the BigQuery query
 
-Add an `INNER JOIN` against the scoring table inside the existing CTE structure.
-The threshold and model version are BigQuery query parameters — set as Airflow DAG params so they can be changed per run without touching SQL.
+Add an `INNER JOIN` against the scoring table, filtering by today's date and a
+configurable threshold. Using `INNER JOIN` (rather than `LEFT JOIN + WHERE`) means
+renters with no score are excluded from the audience automatically.
 
 ```sql
--- Add after the suppression LEFT JOIN in audience_segmentation.sql:
 INNER JOIN ml_predictions.renter_send_scores scores
   ON  p.renter_id = scores.renter_id
   AND DATE(scores.scored_at) = CURRENT_DATE()
   AND scores.predicted_conversion_probability >= @score_threshold
-  AND scores.model_version = @model_version
 ```
 
-Corresponding DAG params:
+`@score_threshold` is a BigQuery query parameter passed from the DAG, so the
+threshold can be changed per campaign without touching SQL. To support multiple
+models and segments without rearchitecting, store model config in a small lookup
+table (`segment`, `model_table`, `score_col`, `score_threshold`) and have the
+query task read its row at runtime — adding a second model is just an INSERT.
+
+## 2. Adding a model freshness dependency to the DAG
+
+Add a `BigQueryTablePartitionExistenceSensor` before `run_audience_query` that
+blocks until today's partition exists in the scoring table. This makes the data
+dependency explicit and prevents the pipeline from running on stale scores.
 
 ```python
-# dags/sms_reactivation_dag.py
-with DAG(
-    dag_id="sms_reactivation",
-    params={
-        "score_threshold": 0.3,
-        "model_version": "sms_reactivation_v1",
-    },
-    ...
-)
-```
-
-**Supporting multiple models / segments (6-week horizon):**
-
-Rather than duplicating DAG logic, store model config in a small lookup table:
-
-```sql
-CREATE TABLE lifecycle.model_config (
-  segment        STRING,    -- e.g. 'sms_reactivation', 'email_winback'
-  model_table    STRING,    -- fully-qualified BQ table
-  score_col      STRING,    -- column name for the probability score
-  score_threshold FLOAT64,
-  is_active      BOOLEAN
-);
-```
-
-The `run_audience_query` task reads its row from `model_config` at runtime.
-Adding a second model requires only an `INSERT` into this table — no DAG or SQL code changes.
-
----
-
-## 2. DAG Modification — Model Freshness Dependency
-
-Add a sensor before `run_audience_query` that blocks until today's scores exist:
-
-```python
-from airflow.providers.google.cloud.sensors.bigquery import BigQueryTablePartitionExistenceSensor
-
 wait_for_scores = BigQueryTablePartitionExistenceSensor(
     task_id="wait_for_scores",
-    project_id="{{ var.value.gcp_project }}",
     dataset_id="ml_predictions",
     table_id="renter_send_scores",
-    partition_id="{{ ds_nodash }}",  # YYYYMMDD — matches scored_at date partition
-    timeout=7200,        # wait up to 2 hours (5 AM → 7 AM max)
-    poke_interval=300,   # check every 5 minutes
-    retries=0,           # sensor failure is handled by timeout, not retries
+    partition_id="{{ ds_nodash }}",  # YYYYMMDD
+    timeout=7200,       # wait up to 2 hours
+    poke_interval=300,  # check every 5 minutes
 )
 
-# Updated dependency chain:
-wait_for_scores >> run_audience_query() >> validate_audience() >> execute_send() >> log_and_notify()
+wait_for_scores >> run_audience_query >> validate_audience >> execute_send >> log_and_notify
 ```
 
----
+## 3. Handling model pipeline delays
 
-## 3. Handling Model Pipeline Delays
+If scores are not ready within the 2-hour window, the sensor times out, the task
+fails, and Airflow's standard retries fire. If all retries are exhausted, the SLA
+miss alert pages on-call, who decides whether to skip the day or manually trigger
+with prior-day scores.
 
-**Design principle:** Sending to unscored renters wastes volume and degrades deliverability metrics — one missed day is less costly than a poorly-targeted bulk send.
-
-| Scenario | Behaviour |
-|---|---|
-| Scores arrive within 2-hour window | Pipeline runs normally |
-| Scores arrive after 2 hours | Sensor times out → task fails → Airflow's 2 retries fire → SLA miss alert pages on-call |
-| Scores never arrive | On-call decides: skip today or manually trigger with prior-day scores |
-
-**Optional graceful fallback** (if business requires same-day send regardless):
-
-The sensor can be replaced with a custom operator that first checks today's partition;
-if missing, it falls back to the most recent partition within the last 25 hours and logs a `used_stale_scores=true` flag in the `campaign_runs` reporting table.
-This makes the fallback explicit and auditable rather than silent.
-
-**Why not just send without scores?**  
-Without score filtering the audience is roughly 3–5× larger. Sending to low-intent renters increases opt-out rates and ESP complaint rates, which degrades the sender domain reputation — a cost that compounds over weeks.
+Sending without scores is not the right default: an unfiltered audience is
+roughly 3–5× larger, increasing opt-out and complaint rates, which degrades
+sender domain reputation over time. One missed day costs less than a poorly
+targeted bulk send. If the business requires a same-day send regardless, the
+sensor can be replaced with a custom operator that falls back to the most recent
+available scores and records a `used_stale_scores=true` flag in the reporting
+table so the fallback is auditable.

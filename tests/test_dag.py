@@ -44,6 +44,13 @@ def test_dag_retries_and_retry_delay():
         assert task.retry_delay == timedelta(minutes=5), f"{task.task_id} retry_delay should be 5m"
 
 
+def test_dag_no_catchup():
+    # catchup=True on a DAG with start_date=2024-01-01 would trigger hundreds of
+    # backfill runs on first deploy, sending SMS to the full audience for each missed day.
+    dag = _load_dag()
+    assert dag.catchup is False
+
+
 def test_dag_linear_dependencies():
     dag = _load_dag()
     task_map = {t.task_id: t for t in dag.tasks}

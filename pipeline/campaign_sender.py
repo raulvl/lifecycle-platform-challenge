@@ -92,6 +92,7 @@ def execute_campaign_send(
         if success:
             for renter in batch:
                 sent_set.add(make_dedup_key(campaign_id, renter["renter_id"]))
+            save_sent_set(sent_log_path, sent_set)
             total_sent += len(batch)
             logger.info("batch_sent campaign=%s count=%d", campaign_id, len(batch))
         else:
@@ -103,8 +104,6 @@ def execute_campaign_send(
                 error,
                 [r["renter_id"] for r in batch],
             )
-
-    save_sent_set(sent_log_path, sent_set)
 
     summary = {
         "total_sent": total_sent,

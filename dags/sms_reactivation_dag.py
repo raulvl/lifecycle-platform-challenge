@@ -121,17 +121,28 @@ with DAG(
         )
 
         client = bigquery.Client()
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("run_date", "DATE", run_date),
+                bigquery.ScalarQueryParameter("campaign_type", "STRING", "sms_reactivation"),
+                bigquery.ScalarQueryParameter("audience_size", "INT64", total),
+                bigquery.ScalarQueryParameter("total_sent", "INT64", send_metrics["total_sent"]),
+                bigquery.ScalarQueryParameter("total_failed", "INT64", send_metrics["total_failed"]),
+                bigquery.ScalarQueryParameter("total_skipped", "INT64", send_metrics["total_skipped"]),
+                bigquery.ScalarQueryParameter("elapsed_seconds", "FLOAT64", send_metrics["elapsed_seconds"]),
+            ]
+        )
         client.query(
-            f"""
+            """
             INSERT INTO lifecycle.campaign_runs
                 (run_date, campaign_type, audience_size,
                  total_sent, total_failed, total_skipped, elapsed_seconds)
             VALUES (
-                '{run_date}', 'sms_reactivation', {total},
-                {send_metrics['total_sent']}, {send_metrics['total_failed']},
-                {send_metrics['total_skipped']}, {send_metrics['elapsed_seconds']}
+                @run_date, @campaign_type, @audience_size,
+                @total_sent, @total_failed, @total_skipped, @elapsed_seconds
             )
-            """
+            """,
+            job_config=job_config,
         ).result()
 
         message = (

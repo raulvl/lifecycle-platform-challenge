@@ -72,6 +72,7 @@ def _make_airflow_mocks():
                      default_args=None, tags=None, **kwargs):
             self.dag_id = dag_id
             self.schedule = schedule
+            self.catchup = catchup
             self._default_args = default_args or {}
             _FakeDAG._current_default_args = self._default_args
             _TaskDecorator._registered = []
