@@ -1,0 +1,5 @@
+apache-airflow>=2.8.0
+google-cloud-bigquery>=3.13.0
+tenacity>=8.2.3
+pytest>=8.0.0
+pytest-mock>=3.12.0
